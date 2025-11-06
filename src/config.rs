@@ -129,7 +129,7 @@ impl DonationConfig {
     /// Create an example donation configuration
     pub fn example() -> Self {
         Self {
-            destination_address: "addr1q".to_string(),
+            destination_address: "addr1qxd9mf2747pzmalq732s3cajsukngnqgyew8tmjk70crzml8dhhak4cnqvq09f7k9un8azuv093spejqu4nv0dllm7csvrsgwu".to_string(),
         }
     }
 }
