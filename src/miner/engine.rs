@@ -266,12 +266,11 @@ fn mine_worker(
         .unwrap()
         .as_millis() as u64;
     let nonce_start = ((thread_id as u64) << 56) | (random_offset & 0x00FFFFFFFFFFFFFF);
-    
+
     let mut nonce = nonce_start;
     let mut local_hash_count = 0u64;
 
     while !found.load(Ordering::Relaxed) {
-        
         // Construct preimage
         let preimage = construct_preimage(nonce, address, challenge);
 
@@ -282,11 +281,8 @@ fn mine_worker(
 
         // Check if hash meets difficulty
         if check_difficulty(&hash_result, &difficulty_mask) {
-            debug!(
-                "Thread {} found solution! Nonce: {:016x}",
-                thread_id, nonce
-            );
-            
+            debug!("Thread {} found solution! Nonce: {:016x}", thread_id, nonce);
+
             found.store(true, Ordering::Relaxed);
             solution_nonce.store(nonce, Ordering::Relaxed);
             let _ = tx.send(nonce);
@@ -298,7 +294,7 @@ fn mine_worker(
             hash_count.fetch_add(1000, Ordering::Relaxed);
             local_hash_count = 0;
         }
-        
+
         nonce = nonce.wrapping_add(1);
     }
 
@@ -383,7 +379,7 @@ pub fn difficulty_to_level(difficulty_hex: &str) -> &'static str {
         if bytes.len() >= 4 {
             let difficulty = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
             let leading_zeros = difficulty.leading_zeros();
-            
+
             // Match website's difficulty levels based on leading zero bits
             match leading_zeros {
                 0..=3 => "Impossible",

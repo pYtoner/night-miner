@@ -129,7 +129,11 @@ impl MiningCoordinator {
                 let difficulty_level = crate::miner::difficulty_to_level(&challenge.difficulty);
                 info!(
                     "Day {}/{} - Challenge {} - Difficulty: {} ({})",
-                    current_day, max_day, challenge.challenge_id, challenge.difficulty, difficulty_level
+                    current_day,
+                    max_day,
+                    challenge.challenge_id,
+                    challenge.difficulty,
+                    difficulty_level
                 );
 
                 // Check if we already submitted a solution for this challenge (local tracking)
@@ -144,18 +148,24 @@ impl MiningCoordinator {
                     }
                     return Ok(true);
                 }
-                
+
                 // Check server statistics to see if we already have this solution
                 // (e.g., from a previous run or another miner instance)
-                if let Ok(stats) = self.client.get_statistics(self.wallet.get_primary_address()).await {
+                if let Ok(stats) = self
+                    .client
+                    .get_statistics(self.wallet.get_primary_address())
+                    .await
+                {
                     // If we have crypto_receipts >= challenge_number for day 1, we likely already submitted this
                     // This is a heuristic check - challenges are issued sequentially
-                    if current_day == 1 && stats.local.crypto_receipts >= challenge.challenge_number {
+                    if current_day == 1 && stats.local.crypto_receipts >= challenge.challenge_number
+                    {
                         info!(
                             "Server shows {} crypto receipts, likely already have solution for challenge {} (#{}).Skipping...",
                             stats.local.crypto_receipts, challenge.challenge_id, challenge.challenge_number
                         );
-                        self.submitted_challenges.insert(challenge.challenge_id.clone());
+                        self.submitted_challenges
+                            .insert(challenge.challenge_id.clone());
                         let wait_time = calculate_wait_time(next_challenge_starts_at);
                         if wait_time.as_secs() > 0 {
                             self.wait_with_countdown_and_stats(wait_time).await;
@@ -193,7 +203,7 @@ impl MiningCoordinator {
                         // Submit the solution with retry logic - lowercase per API spec
                         let nonce_hex = format!("{:016x}", nonce);
                         let mut submit_result = None;
-                        
+
                         // Try up to 3 times with exponential backoff
                         for attempt in 1..=3 {
                             match self
@@ -230,9 +240,10 @@ impl MiningCoordinator {
                                     response.crypto_receipt.timestamp
                                 );
                                 self.stats.solutions_submitted += 1;
-                                
+
                                 // Mark this challenge as submitted so we don't re-mine it
-                                self.submitted_challenges.insert(challenge.challenge_id.clone());
+                                self.submitted_challenges
+                                    .insert(challenge.challenge_id.clone());
 
                                 // Try to fetch star rates to estimate earnings
                                 if let Ok(star_rates) = self.client.get_work_to_star_rate().await {
@@ -248,13 +259,17 @@ impl MiningCoordinator {
                             }
                             Some(Err(e)) => {
                                 let error_msg = format!("{:#}", e);
-                                
+
                                 // If solution already exists, mark as submitted to avoid re-mining
                                 if error_msg.contains("Solution already exists") {
                                     info!("Solution already exists for challenge {}. Skipping re-mining.", challenge.challenge_id);
-                                    self.submitted_challenges.insert(challenge.challenge_id.clone());
+                                    self.submitted_challenges
+                                        .insert(challenge.challenge_id.clone());
                                 } else {
-                                    error!("Failed to submit solution after 3 attempts: {}", error_msg);
+                                    error!(
+                                        "Failed to submit solution after 3 attempts: {}",
+                                        error_msg
+                                    );
                                 }
                             }
                             None => {

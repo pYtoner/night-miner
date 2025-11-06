@@ -107,11 +107,11 @@ pub struct DonationConfig {
 impl DonationConfig {
     /// Load donation configuration from a JSON file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let contents =
-            fs::read_to_string(path.as_ref()).context("Failed to read donation-address.json file")?;
+        let contents = fs::read_to_string(path.as_ref())
+            .context("Failed to read donation-address.json file")?;
 
-        let config: DonationConfig =
-            serde_json::from_str(&contents).context("Failed to parse donation-address.json file")?;
+        let config: DonationConfig = serde_json::from_str(&contents)
+            .context("Failed to parse donation-address.json file")?;
 
         Ok(config)
     }
@@ -121,8 +121,7 @@ impl DonationConfig {
         let contents = serde_json::to_string_pretty(self)
             .context("Failed to serialize donation configuration")?;
 
-        fs::write(path.as_ref(), contents)
-            .context("Failed to write donation-address.json file")?;
+        fs::write(path.as_ref(), contents).context("Failed to write donation-address.json file")?;
 
         Ok(())
     }
