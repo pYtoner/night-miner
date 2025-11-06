@@ -378,7 +378,7 @@ async fn main() -> Result<()> {
             // Create a template wallet config with new structure
             let wallet = WalletConfig {
                 addresses: vec![wallet::AddressEntry {
-                    address: "addr1q8upjxynn626c772r5nzym...".to_string(),
+                    address: "addr1q8u...".to_string(),
                     verification_key: "YOUR_PUBLIC_KEY_HEX_64_CHARS".to_string(),
                 }],
                 challenge_submissions: HashMap::new(),
