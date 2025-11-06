@@ -7,7 +7,7 @@ description = "Optimized miner for NIGHT token Scavenger Mine program"
 
 [dependencies]
 # AshMaize library from official GitHub repository
-ashmaize = { git = "https://github.com/input-output-hk/ce-ashmaize", branch = "master" }
+ashmaize = { git = "https://github.com/input-output-hk/ce-ashmaize", rev = "58d6a1fe3df2582e14d53b67292ce8a36d90e7e6" }
 
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
