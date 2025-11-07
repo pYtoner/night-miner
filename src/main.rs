@@ -1526,6 +1526,13 @@ async fn main() -> Result<()> {
                                 println!("\n⏸️  Mining stopped");
                                 break 'mining_loop;
                             }
+                            miner::MiningResult::HashLimitReached { attempts } => {
+                                println!(
+                                    "\n🛑 Hash limit reached after {} attempts; moving to next challenge",
+                                    attempts
+                                );
+                                break 'mining_loop;
+                            }
                         }
                     }
                 }

@@ -26,6 +26,8 @@ pub enum MiningResult {
     Stopped,
     /// Timeout reached before finding a solution
     Timeout,
+    /// Reached configured hash attempt limit without finding a solution
+    HashLimitReached { attempts: u64 },
 }
 
 /// Mining engine that searches for valid nonces
@@ -114,10 +116,20 @@ impl MiningEngine {
         let difficulty_mask = parse_difficulty(&challenge.difficulty)?;
         let start_time = Instant::now();
 
+        let target = u32::from_be_bytes(difficulty_mask);
+        let zero_bits = (!target).count_ones() as u32;
+        let expected_attempts = 1u64 << zero_bits;
+        let max_hashes = expected_attempts.saturating_mul(4);
+        info!(
+            "Hash limit set to {} attempts (expected {} based on difficulty)",
+            max_hashes, expected_attempts
+        );
+
         // Shared state
         let found = Arc::new(AtomicBool::new(false));
         let solution_nonce = Arc::new(AtomicU64::new(0));
         let hash_count = Arc::new(AtomicU64::new(0));
+        let hash_limit_reached = Arc::new(AtomicBool::new(false));
 
         // Channel for communication
         let (tx, rx) = bounded(self.num_threads * 2);
@@ -129,6 +141,7 @@ impl MiningEngine {
             let found = Arc::clone(&found);
             let solution_nonce = Arc::clone(&solution_nonce);
             let hash_count = Arc::clone(&hash_count);
+            let hash_limit_reached = Arc::clone(&hash_limit_reached);
             let tx = tx.clone();
 
             let challenge = challenge.clone();
@@ -144,6 +157,8 @@ impl MiningEngine {
                     found,
                     solution_nonce,
                     hash_count,
+                    hash_limit_reached,
+                    max_hashes,
                     tx,
                 );
             }));
@@ -220,13 +235,27 @@ impl MiningEngine {
                 Ok(nonce) => MiningResult::Solution(nonce),
                 Err(_) => {
                     found.store(true, Ordering::Relaxed);
-                    MiningResult::Timeout
+                    if hash_limit_reached.load(Ordering::Relaxed) {
+                        MiningResult::HashLimitReached {
+                            attempts: hash_count.load(Ordering::Relaxed),
+                        }
+                    } else {
+                        MiningResult::Timeout
+                    }
                 }
             }
         } else {
             match rx.recv() {
                 Ok(nonce) => MiningResult::Solution(nonce),
-                Err(_) => MiningResult::Stopped,
+                Err(_) => {
+                    if hash_limit_reached.load(Ordering::Relaxed) {
+                        MiningResult::HashLimitReached {
+                            attempts: hash_count.load(Ordering::Relaxed),
+                        }
+                    } else {
+                        MiningResult::Stopped
+                    }
+                }
             }
         };
 
@@ -264,6 +293,14 @@ impl MiningEngine {
             MiningResult::Stopped => {
                 warn!("Mining stopped");
             }
+            MiningResult::HashLimitReached { attempts } => {
+                warn!(
+                    "Hash limit reached after {:.2}s | Attempts: {} | Rate: {:.2} H/s",
+                    elapsed.as_secs_f64(),
+                    attempts,
+                    hash_rate
+                );
+            }
         }
 
         Ok(result)
@@ -280,6 +317,8 @@ fn mine_worker(
     found: Arc<AtomicBool>,
     solution_nonce: Arc<AtomicU64>,
     hash_count: Arc<AtomicU64>,
+    hash_limit_reached: Arc<AtomicBool>,
+    hash_limit: u64,
     tx: Sender<u64>,
 ) {
     debug!("Worker thread {} started", thread_id);
@@ -314,10 +353,27 @@ fn mine_worker(
             break;
         }
 
+        if hash_count
+            .load(Ordering::Relaxed)
+            .saturating_add(local_hash_count)
+            >= hash_limit
+        {
+            if !found.swap(true, Ordering::Relaxed) {
+                hash_limit_reached.store(true, Ordering::Relaxed);
+            }
+            break;
+        }
+
         // Update global hash count periodically
         if local_hash_count % 1000 == 0 {
-            hash_count.fetch_add(1000, Ordering::Relaxed);
+            let previous = hash_count.fetch_add(1000, Ordering::Relaxed);
             local_hash_count = 0;
+            if previous.saturating_add(1000) >= hash_limit {
+                if !found.swap(true, Ordering::Relaxed) {
+                    hash_limit_reached.store(true, Ordering::Relaxed);
+                }
+                break;
+            }
         }
 
         nonce = nonce.wrapping_add(1);

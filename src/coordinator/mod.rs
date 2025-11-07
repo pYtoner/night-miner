@@ -283,6 +283,12 @@ impl MiningCoordinator {
                     MiningResult::Stopped => {
                         warn!("Mining was stopped");
                     }
+                    MiningResult::HashLimitReached { attempts } => {
+                        warn!(
+                            "Hash limit reached after {} attempts for challenge {}",
+                            attempts, challenge.challenge_id
+                        );
+                    }
                 }
 
                 // Wait until next challenge with countdown and stats
