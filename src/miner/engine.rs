@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use ashmaize::{hash, Rom, RomGenerationType};
 use crossbeam::channel::{bounded, Sender};
 use indicatif::{ProgressBar, ProgressStyle};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -158,26 +159,50 @@ impl MiningEngine {
             let found = Arc::clone(&found);
 
             Some(thread::spawn(move || {
-                let mut last_count = 0u64;
-                let mut last_time = Instant::now();
+                let mut samples: VecDeque<(Instant, u64)> = VecDeque::new();
+                let window = Duration::from_secs(20);
+
+                // Seed with initial state so the first few updates use the full window
+                let initial_time = Instant::now();
+                samples.push_back((initial_time, 0));
 
                 while !found.load(Ordering::Relaxed) {
                     thread::sleep(Duration::from_millis(500));
 
                     let current_count = hash_count.load(Ordering::Relaxed);
                     let current_time = Instant::now();
-                    let elapsed = current_time.duration_since(last_time).as_secs_f64();
 
-                    if elapsed > 0.0 {
-                        let hash_rate = (current_count - last_count) as f64 / elapsed;
-                        pb.set_message(format!(
-                            "Hashes: {} | Rate: {:.2} H/s",
-                            current_count, hash_rate
-                        ));
+                    samples.push_back((current_time, current_count));
+
+                    // Drop samples that fall outside of the smoothing window
+                    while let Some((old_time, _)) = samples.front() {
+                        if current_time.duration_since(*old_time) > window {
+                            samples.pop_front();
+                        } else {
+                            break;
+                        }
                     }
 
-                    last_count = current_count;
-                    last_time = current_time;
+                    let hash_rate = if let Some((oldest_time, oldest_count)) = samples.front() {
+                        let elapsed = current_time.duration_since(*oldest_time).as_secs_f64();
+                        if elapsed > 0.0 {
+                            (current_count.saturating_sub(*oldest_count)) as f64 / elapsed
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        0.0
+                    };
+
+                    pb.set_message(format!(
+                        "Hashes: {} | Rate: {:.2} H/s",
+                        current_count, hash_rate
+                    ));
+
+                    // Keep one sample so the queue does not grow unbounded while mining
+                    if samples.len() > 50 {
+                        samples.pop_front();
+                    }
                 }
 
                 pb.finish_with_message(format!(
