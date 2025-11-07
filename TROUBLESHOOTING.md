@@ -216,15 +216,6 @@ Common issues and their solutions.
 
 ## Runtime Issues
 
-### "Address already has an active donation"
-
-**Problem**: Already donated to another address
-
-**Solution**:
-- Can only donate to one destination
-- To undo: Donate to self
-- To change: First undo, then donate to new address
-
 ### "Challenge not found"
 
 **Problem**: Challenge ID not recognized
@@ -419,7 +410,6 @@ cargo test --release -- --nocapture
 
 ### "Can I run multiple instances?"
 - **Yes**: Use different wallet configs
-- **Consolidate**: Use `donate` command later
 
 ## Still Having Issues?
 

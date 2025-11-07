@@ -267,14 +267,15 @@ This ensures no duplicate work across threads while maintaining cache locality.
 
 ### Endpoints Implemented
 
-All Scavenger Mine API endpoints are fully implemented:
+All Scavenger Mine API endpoints required for solo mining are implemented:
 
 1. **GET /TandC**: Fetch terms and conditions
 2. **POST /register**: Register wallet address
 3. **GET /challenge**: Fetch current challenge
 4. **POST /solution**: Submit solution
-5. **POST /donate_to**: Consolidate solutions
-6. **GET /work_to_star_rate**: Fetch earnings rates
+5. **GET /work_to_star_rate**: Fetch earnings rates
+
+> _Note_: The `donate_to` consolidation endpoint is intentionally omitted to keep all rewards assigned to the active mining address.
 
 ### Error Handling
 
@@ -541,11 +542,11 @@ See TROUBLESHOOTING.md for common issues and solutions.
 
 ### API Limitations (November 2025)
 
-**donate_to Endpoint Broken:**
-- Cannot consolidate solutions to single address
+**Donation Consolidation Removed:**
+- The miner no longer calls the `donate_to` endpoint; every solution remains with the address that mined it
 - Users must claim rewards on **each address individually**
-- With 100+ addresses in AutoMine, claiming will be tedious
-- Workaround: Import `.skey` files into Eternl wallet for easier management
+- With 100+ addresses in AutoMine, claiming can be tedious
+- Recommended approach: Import `.skey` files into Eternl wallet or batch-sign via `cardano-cli`
 
 ### Challenge Timer Accuracy
 
@@ -557,7 +558,7 @@ See TROUBLESHOOTING.md for common issues and solutions.
 ## Future Enhancements
 
 **Potential Improvements:**
-1. Automated claiming system (when donate_to fixed)
+1. Automated claiming system for aggregating manual payouts
 2. GUI for easier wallet management
 3. Cloud deployment support
 4. Multi-machine coordination

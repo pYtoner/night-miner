@@ -134,25 +134,13 @@ As many as needed. The miners can typically create 30+ addresses over a single c
 
 ### How do I claim rewards later?
 
-**Address Consolidation (Preferred Method - Currently Unavailable):**
+Keep every `addr-*.skey` file safe. This build mines exclusively for your configured wallet and no longer exposes donation or consolidation tooling. When you're ready to claim rewards, import the keys into a wallet such as Eternl or sign transactions manually with `cardano-cli`.
 
-The Scavenger Mine API has a `donate_to` endpoint that allows you to register a single Cardano address. Once working, all your mined rewards would be consolidated to that address automatically.
-
-- **Status:** Currently broken, waiting for IOHK to fix
-- **When fixed:** This miner will be updated to let you register your desired address
-- **Benefit:** You won't need the generated `.skey` files to claim rewards
-
-**Manual Claiming (Backup Method):**
-
-If the `donate_to` endpoint isn't fixed, you'll need to manually claim using:
-1. The `addr-*.skey` files to sign transactions
-2. Import keys into Eternl wallet or use Cardano CLI
-
-**Important:** Keep your `auto-mine-wallet/` backups safe regardless! Even if address consolidation works, you should retain the keys as a safety backup.
+**Important:** Back up the entire `auto-mine-wallet/` directory regularly. These keys are the only way to recover mined rewards.
 
 ## Disclaimer
 
-This software is provided "as is" without warranty. By using this software, you agree to mine one solution per challenge for the developer. Mining results depend on network conditions, competition, and luck.
+This software is provided "as is" without warranty. You are responsible for securing your wallet keys and complying with local regulations. Mining results depend on network conditions, competition, and luck.
 
 ---
 

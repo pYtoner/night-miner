@@ -81,18 +81,6 @@ pub struct CryptoReceipt {
     pub signature: String,
 }
 
-/// Response from POST /donate_to endpoint
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DonationResponse {
-    pub status: String,
-    pub message: String,
-    pub donation_id: String,
-    pub original_address: String,
-    pub destination_address: String,
-    pub timestamp: DateTime<Utc>,
-    pub solutions_consolidated: u32,
-}
-
 /// Response from GET /work_to_star_rate endpoint
 pub type WorkToStarRate = Vec<u64>;
 

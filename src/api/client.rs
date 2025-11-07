@@ -225,46 +225,6 @@ impl ScavengerClient {
         }
     }
 
-    /// POST /donate_to - Re-assign solutions from one address to another
-    pub async fn donate_to(
-        &self,
-        destination_address: &str,
-        original_address: &str,
-        signature: &str,
-    ) -> Result<DonationResponse> {
-        let encoded_destination = urlencoding::encode(destination_address);
-        let encoded_original = urlencoding::encode(original_address);
-        let encoded_signature = urlencoding::encode(signature);
-        let url = self.endpoint(&format!(
-            "donate_to/{}/{}/{}",
-            encoded_destination, encoded_original, encoded_signature
-        ))?;
-
-        debug!(
-            "Donating from {} to {}",
-            original_address, destination_address
-        );
-
-        let response = self
-            .client
-            .post(url)
-            .json(&serde_json::json!({}))
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            let donation = response.json::<DonationResponse>().await?;
-            info!(
-                "Successfully donated {} solutions from {} to {}",
-                donation.solutions_consolidated, original_address, destination_address
-            );
-            Ok(donation)
-        } else {
-            let error_text = response.text().await?;
-            anyhow::bail!("Donation failed: {}", error_text);
-        }
-    }
-
     /// GET /work_to_star_rate - Get daily STAR allocation rates
     pub async fn get_work_to_star_rate(&self) -> Result<WorkToStarRate> {
         let url = self.endpoint("work_to_star_rate")?;
