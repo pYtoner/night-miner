@@ -1,15 +1,24 @@
 use anyhow::{Context, Result};
-use reqwest::Client;
-use tracing::{debug, info};
+use reqwest::{Client, StatusCode, Url};
+use tracing::{debug, info, warn};
 
 use super::models::*;
 
-const BASE_URL: &str = "https://sm.midnight.gd/api";
+const DEFAULT_BASE_URL: &str = "https://scavenger.prod.gd.midnighttge.io/";
+
+/// Result of attempting to register an address
+#[derive(Debug, Clone)]
+pub enum RegistrationResult {
+    /// Address was registered and a receipt was returned
+    Registered(RegistrationResponse),
+    /// Address was already registered previously
+    AlreadyRegistered { message: String },
+}
 
 /// API client for the Scavenger Mine service
 pub struct ScavengerClient {
     client: Client,
-    base_url: String,
+    base_url: Url,
 }
 
 impl ScavengerClient {
@@ -21,10 +30,13 @@ impl ScavengerClient {
             .build()
             .context("Failed to create HTTP client")?;
 
-        Ok(Self {
-            client,
-            base_url: BASE_URL.to_string(),
-        })
+        let base = std::env::var("SCAVENGER_API_BASE_URL")
+            .unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
+        let base_url = Self::parse_base_url(&base)?;
+
+        debug!("Using Scavenger API base: {}", base_url);
+
+        Ok(Self { client, base_url })
     }
 
     /// Create a new API client with a custom base URL (useful for testing)
@@ -36,7 +48,29 @@ impl ScavengerClient {
             .build()
             .context("Failed to create HTTP client")?;
 
+        let base_url = Self::parse_base_url(&base_url)?;
+
         Ok(Self { client, base_url })
+    }
+
+    fn parse_base_url(raw: &str) -> Result<Url> {
+        let mut url = Url::parse(raw)
+            .or_else(|_| Url::parse(&(raw.to_string() + "/")))
+            .context("Invalid Scavenger API base URL")?;
+
+        if !url.path().ends_with('/') {
+            let mut path = url.path().to_string();
+            path.push('/');
+            url.set_path(&path);
+        }
+
+        Ok(url)
+    }
+
+    fn endpoint(&self, path: &str) -> Result<Url> {
+        self.base_url
+            .join(path)
+            .context(format!("Failed to build endpoint URL for {}", path))
     }
 
     /// GET /TandC - Obtain the Token End User Agreement
@@ -45,14 +79,14 @@ impl ScavengerClient {
         version: Option<&str>,
     ) -> Result<TermsAndConditions> {
         let url = if let Some(v) = version {
-            format!("{}/TandC/{}", self.base_url, v)
+            self.endpoint(&format!("TandC/{}", v))?
         } else {
-            format!("{}/TandC", self.base_url)
+            self.endpoint("TandC")?
         };
 
         debug!("Fetching T&C from: {}", url);
 
-        let response = self.client.get(&url).send().await?;
+        let response = self.client.get(url).send().await?;
 
         if response.status().is_success() {
             let tandc = response.json::<TermsAndConditions>().await?;
@@ -70,11 +104,15 @@ impl ScavengerClient {
         address: &str,
         signature: &str,
         pubkey: &str,
-    ) -> Result<RegistrationResponse> {
-        let url = format!(
-            "{}/register/{}/{}/{}",
-            self.base_url, address, signature, pubkey
-        );
+    ) -> Result<RegistrationResult> {
+        let encoded_address = urlencoding::encode(address);
+        let encoded_signature = urlencoding::encode(signature);
+        let encoded_pubkey = urlencoding::encode(pubkey);
+
+        let url = self.endpoint(&format!(
+            "register/{}/{}/{}",
+            encoded_address, encoded_signature, encoded_pubkey
+        ))?;
 
         debug!("Registering address: {}", address);
         debug!("Signature: {}", signature);
@@ -83,28 +121,50 @@ impl ScavengerClient {
 
         let response = self
             .client
-            .post(&url)
+            .post(url)
             .json(&serde_json::json!({}))
             .send()
             .await?;
 
-        if response.status().is_success() {
+        let status = response.status();
+
+        if status.is_success() {
             let reg_response = response.json::<RegistrationResponse>().await?;
             info!("Successfully registered address: {}", address);
-            Ok(reg_response)
-        } else {
-            let error_text = response.text().await?;
-            anyhow::bail!("Registration failed: {}", error_text);
+            return Ok(RegistrationResult::Registered(reg_response));
         }
+
+        let error_text = response.text().await?;
+
+        if status == StatusCode::BAD_REQUEST {
+            if let Ok(api_error) = serde_json::from_str::<ApiError>(&error_text) {
+                let message_lower = api_error.message.to_lowercase();
+                if message_lower.contains("already") {
+                    warn!(
+                        "Address {} already registered: {}",
+                        address, api_error.message
+                    );
+                    return Ok(RegistrationResult::AlreadyRegistered {
+                        message: api_error.message,
+                    });
+                }
+            }
+        }
+
+        anyhow::bail!(
+            "Registration failed (status {}): {}",
+            status,
+            error_text.trim()
+        );
     }
 
     /// GET /challenge - Fetch the next available challenge
     pub async fn get_challenge(&self) -> Result<ChallengeResponse> {
-        let url = format!("{}/challenge", self.base_url);
+        let url = self.endpoint("challenge")?;
 
         debug!("Fetching current challenge");
 
-        let response = self.client.get(&url).send().await?;
+        let response = self.client.get(url).send().await?;
 
         if response.status().is_success() {
             let challenge = response.json::<ChallengeResponse>().await?;
@@ -138,16 +198,19 @@ impl ScavengerClient {
         challenge_id: &str,
         nonce: &str,
     ) -> Result<SolutionResponse> {
-        let url = format!(
-            "{}/solution/{}/{}/{}",
-            self.base_url, address, challenge_id, nonce
-        );
+        let encoded_address = urlencoding::encode(address);
+        let encoded_challenge = urlencoding::encode(challenge_id);
+        let encoded_nonce = urlencoding::encode(nonce);
+        let url = self.endpoint(&format!(
+            "solution/{}/{}/{}",
+            encoded_address, encoded_challenge, encoded_nonce
+        ))?;
 
         debug!("Submitting solution for challenge: {}", challenge_id);
 
         let response = self
             .client
-            .post(&url)
+            .post(url)
             .json(&serde_json::json!({}))
             .send()
             .await?;
@@ -169,10 +232,13 @@ impl ScavengerClient {
         original_address: &str,
         signature: &str,
     ) -> Result<DonationResponse> {
-        let url = format!(
-            "{}/donate_to/{}/{}/{}",
-            self.base_url, destination_address, original_address, signature
-        );
+        let encoded_destination = urlencoding::encode(destination_address);
+        let encoded_original = urlencoding::encode(original_address);
+        let encoded_signature = urlencoding::encode(signature);
+        let url = self.endpoint(&format!(
+            "donate_to/{}/{}/{}",
+            encoded_destination, encoded_original, encoded_signature
+        ))?;
 
         debug!(
             "Donating from {} to {}",
@@ -181,7 +247,7 @@ impl ScavengerClient {
 
         let response = self
             .client
-            .post(&url)
+            .post(url)
             .json(&serde_json::json!({}))
             .send()
             .await?;
@@ -201,11 +267,11 @@ impl ScavengerClient {
 
     /// GET /work_to_star_rate - Get daily STAR allocation rates
     pub async fn get_work_to_star_rate(&self) -> Result<WorkToStarRate> {
-        let url = format!("{}/work_to_star_rate", self.base_url);
+        let url = self.endpoint("work_to_star_rate")?;
 
         debug!("Fetching work to star rate");
 
-        let response = self.client.get(&url).send().await?;
+        let response = self.client.get(url).send().await?;
 
         if response.status().is_success() {
             let rates = response.json::<WorkToStarRate>().await?;
@@ -219,11 +285,12 @@ impl ScavengerClient {
 
     /// GET /statistics/{address} - Get statistics for an address
     pub async fn get_statistics(&self, address: &str) -> Result<StatisticsResponse> {
-        let url = format!("{}/statistics/{}", self.base_url, address);
+        let encoded_address = urlencoding::encode(address);
+        let url = self.endpoint(&format!("statistics/{}", encoded_address))?;
 
         debug!("Fetching statistics for address: {}", address);
 
-        let response = self.client.get(&url).send().await?;
+        let response = self.client.get(url).send().await?;
 
         if response.status().is_success() {
             let stats = response.json::<StatisticsResponse>().await?;

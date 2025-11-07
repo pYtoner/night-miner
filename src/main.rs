@@ -13,6 +13,7 @@ use std::process::Command;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use api::RegistrationResult;
 use config::Config;
 use coordinator::MiningCoordinator;
 use wallet::WalletConfig;
@@ -269,19 +270,25 @@ async fn main() -> Result<()> {
 
             info!("Registering address: {}", reg_address);
 
-            let response = client
+            match client
                 .register(&reg_address, &signature, &reg_pubkey)
-                .await?;
-
-            info!("Registration successful!");
-            info!(
-                "Receipt timestamp: {}",
-                response.registration_receipt.timestamp
-            );
-            info!(
-                "Receipt signature: {}",
-                response.registration_receipt.signature
-            );
+                .await?
+            {
+                RegistrationResult::Registered(response) => {
+                    info!("Registration successful!");
+                    info!(
+                        "Receipt timestamp: {}",
+                        response.registration_receipt.timestamp
+                    );
+                    info!(
+                        "Receipt signature: {}",
+                        response.registration_receipt.signature
+                    );
+                }
+                RegistrationResult::AlreadyRegistered { message } => {
+                    info!("Address already registered: {}", message);
+                }
+            }
         }
 
         Commands::Challenge => {
@@ -990,8 +997,12 @@ async fn main() -> Result<()> {
                     attempt += 1;
 
                     match client.register(&address, &reg_signature, &pubkey_hex).await {
-                        Ok(_) => {
+                        Ok(RegistrationResult::Registered(_)) => {
                             println!("   ✅ Registered as miner");
+                            registered = true;
+                        }
+                        Ok(RegistrationResult::AlreadyRegistered { message }) => {
+                            println!("   ℹ️  Address already registered: {}", message);
                             registered = true;
                         }
                         Err(e) => {
@@ -1293,8 +1304,12 @@ async fn main() -> Result<()> {
                         wallet::sign_message_with_key(&tandc.message, &address, &payment_skey)?;
 
                     match client.register(&address, &signature, &pubkey_hex).await {
-                        Ok(_) => {
+                        Ok(RegistrationResult::Registered(_)) => {
                             println!("   ✅ Registered successfully");
+                            registered = true;
+                        }
+                        Ok(RegistrationResult::AlreadyRegistered { message }) => {
+                            println!("   ℹ️  Address already registered: {}", message);
                             registered = true;
                         }
                         Err(e) => {
@@ -1520,8 +1535,17 @@ async fn main() -> Result<()> {
                                     )?;
 
                                     match client.register(&address, &signature, &pubkey_hex).await {
-                                        Ok(_) => {
+                                        Ok(RegistrationResult::Registered(_)) => {
                                             println!("   ✅ Registered successfully");
+                                            current_address_index = address_counter;
+                                            address_counter += 1;
+                                            registered = true;
+                                        }
+                                        Ok(RegistrationResult::AlreadyRegistered { message }) => {
+                                            println!(
+                                                "   ℹ️  Address already registered: {}",
+                                                message
+                                            );
                                             current_address_index = address_counter;
                                             address_counter += 1;
                                             registered = true;
@@ -1781,10 +1805,29 @@ async fn main() -> Result<()> {
                                                         )
                                                         .await
                                                     {
-                                                        Ok(_) => {
+                                                        Ok(RegistrationResult::Registered(_)) => {
                                                             println!("   ✅ Successfully registered address");
                                                             registered = true;
                                                             // Retry submission
+                                                            println!(
+                                                                "   🔄 Retrying submission..."
+                                                            );
+                                                            tokio::time::sleep(
+                                                                tokio::time::Duration::from_secs(2),
+                                                            )
+                                                            .await;
+                                                            continue 'mining_loop;
+                                                        }
+                                                        Ok(
+                                                            RegistrationResult::AlreadyRegistered {
+                                                                message,
+                                                            },
+                                                        ) => {
+                                                            println!(
+                                                                "   ℹ️  Address already registered: {}",
+                                                                message
+                                                            );
+                                                            registered = true;
                                                             println!(
                                                                 "   🔄 Retrying submission..."
                                                             );

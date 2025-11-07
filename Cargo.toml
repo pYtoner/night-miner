@@ -23,6 +23,9 @@ serde_cbor = "0.11"
 # CLI
 clap = { version = "4.4", features = ["derive"] }
 
+# URL utilities
+urlencoding = "2.1"
+
 # Logging and tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
