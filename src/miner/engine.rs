@@ -112,6 +112,14 @@ impl MiningEngine {
         );
 
         let difficulty_mask = parse_difficulty(&challenge.difficulty)?;
+    let difficulty_target = u32::from_be_bytes(difficulty_mask);
+    // Each zero bit in the mask halves the success probability for a random hash.
+        let constrained_bits = difficulty_target.count_zeros();
+        let expected_hashes = 1u128 << constrained_bits;
+        info!(
+            "Difficulty requires {} constrained bits; expect ~{} hashes (2^{}) to solve",
+            constrained_bits, expected_hashes, constrained_bits
+        );
         let start_time = Instant::now();
 
         // Shared state
