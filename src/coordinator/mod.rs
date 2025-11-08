@@ -56,9 +56,12 @@ impl MiningCoordinator {
         wallet: WalletConfig,
         num_threads: Option<usize>,
         challenge_timeout_minutes: Option<u64>,
+        threshold_multiplier: u64,
     ) -> Result<Self> {
         let client = ScavengerClient::new()?;
-        let mining_engine = MiningEngine::new(num_threads).with_progress_bar(true);
+        let mining_engine = MiningEngine::new(num_threads)
+            .with_threshold_multiplier(threshold_multiplier)
+            .with_progress_bar(true);
         let challenge_timeout = Duration::from_secs(challenge_timeout_minutes.unwrap_or(55) * 60);
 
         Ok(Self {
@@ -282,6 +285,15 @@ impl MiningCoordinator {
                     }
                     MiningResult::Stopped => {
                         warn!("Mining was stopped");
+                    }
+                    MiningResult::ExceededExpectedHashes {
+                        total_hashes,
+                        threshold,
+                    } => {
+                        warn!(
+                            "Exceeded expected hash threshold without solution ({} >= {}). Consider rotating to a fresh address before retrying.",
+                            total_hashes, threshold
+                        );
                     }
                 }
 

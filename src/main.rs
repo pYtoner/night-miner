@@ -18,6 +18,8 @@ use config::Config;
 use coordinator::MiningCoordinator;
 use wallet::WalletConfig;
 
+const HASH_THRESHOLD_MULTIPLIER: u64 = 4;
+
 /// NIGHT Token Scavenger Mine - Optimized Mining Client
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -205,8 +207,12 @@ async fn main() -> Result<()> {
             );
 
             // Create and run coordinator
-            let mut coordinator =
-                MiningCoordinator::new(wallet, config.threads, config.challenge_timeout_minutes)?;
+            let mut coordinator = MiningCoordinator::new(
+                wallet,
+                config.threads,
+                config.challenge_timeout_minutes,
+                HASH_THRESHOLD_MULTIPLIER,
+            )?;
 
             coordinator.run().await?;
         }
@@ -980,7 +986,9 @@ async fn main() -> Result<()> {
             let timeout_duration = timeout.map(|t| std::time::Duration::from_secs(t * 60));
 
             // Create mining engine once (will reuse ROM across addresses)
-            let mut mining_engine = miner::MiningEngine::new(threads).with_progress_bar(true);
+            let mut mining_engine = miner::MiningEngine::new(threads)
+                .with_threshold_multiplier(HASH_THRESHOLD_MULTIPLIER)
+                .with_progress_bar(true);
             let mut current_challenge_id: Option<String> = None;
 
             'mining_loop: loop {
@@ -1048,168 +1056,27 @@ async fn main() -> Result<()> {
                                     "\n🔄 All addresses have solutions. Creating new address..."
                                 );
 
-                                // Create and register new address
-                                let name = format!("addr-{}", address_counter);
-                                println!("\n📝 Creating address: {}", name);
-
-                                let payment_vkey = output_dir.join(format!("{}.vkey", name));
-                                let payment_skey = output_dir.join(format!("{}.skey", name));
-                                let payment_addr = output_dir.join(format!("{}.addr", name));
-
-                                // Generate payment keys only (reuse shared stake key)
-                                Command::new(&cardano_cli)
-                                    .args(&[
-                                        "address",
-                                        "key-gen",
-                                        "--verification-key-file",
-                                        payment_vkey.to_str().unwrap(),
-                                        "--signing-key-file",
-                                        payment_skey.to_str().unwrap(),
-                                    ])
-                                    .output()?;
-
-                                // Build address using shared stake key
-                                let mut args = vec![
-                                    "address",
-                                    "build",
-                                    "--payment-verification-key-file",
-                                    payment_vkey.to_str().unwrap(),
-                                    "--stake-verification-key-file",
-                                    shared_stake_vkey.to_str().unwrap(),
-                                ];
-
-                                if network == "mainnet" {
-                                    args.push("--mainnet");
-                                } else {
-                                    args.push("--testnet-magic");
-                                    args.push("1");
-                                }
-
-                                let addr_output =
-                                    Command::new(&cardano_cli).args(&args).output()?;
-                                let address =
-                                    String::from_utf8(addr_output.stdout)?.trim().to_string();
-                                fs::write(&payment_addr, &address)?;
-
-                                // Get public key
-                                let vkey_content = fs::read_to_string(&payment_vkey)?;
-                                let vkey_json: serde_json::Value =
-                                    serde_json::from_str(&vkey_content)?;
-                                let pubkey_hex = vkey_json["cborHex"]
-                                    .as_str()
-                                    .context("Failed to extract public key")?
-                                    .trim_start_matches("5820")
-                                    .to_string();
-
-                                // Add to wallet
-                                wallet.addresses.push(wallet::AddressEntry {
-                                    address: address.clone(),
-                                    verification_key: pubkey_hex.clone(),
-                                });
-                                wallet.to_file(&wallet_json)?;
-
-                                println!("   ✅ Created: {}", address);
-
-                                // Register the new address with retry logic
-                                println!("🔐 Registering address...");
-
-                                let mut registered = false;
-                                let mut attempt = 0;
-
-                                while !registered {
-                                    attempt += 1;
-
-                                    // Fetch T&C with retry logic
-                                    let tandc = loop {
-                                        match client.get_terms_and_conditions(None).await {
-                                            Ok(tc) => break tc,
-                                            Err(e) => {
-                                                let err_msg = e.to_string();
-                                                if err_msg.contains("timeout")
-                                                    || err_msg.contains("timed out")
-                                                {
-                                                    let wait_time = std::cmp::min(5 * attempt, 30);
-                                                    println!("   ⏳ Network timeout fetching T&C, retrying in {} seconds... (attempt {})", wait_time, attempt);
-                                                    tokio::time::sleep(
-                                                        tokio::time::Duration::from_secs(wait_time),
-                                                    )
-                                                    .await;
-                                                    if attempt >= 10 {
-                                                        println!("   ⚠️  Failed to fetch T&C after {} attempts, skipping registration for now", attempt);
-                                                        continue 'mining_loop;
-                                                    }
-                                                } else {
-                                                    println!(
-                                                        "   ⚠️  T&C fetch error: {}, retrying...",
-                                                        e
-                                                    );
-                                                    tokio::time::sleep(
-                                                        tokio::time::Duration::from_secs(5),
-                                                    )
-                                                    .await;
-                                                }
-                                            }
-                                        }
-                                    };
-
-                                    let signature = wallet::sign_message_with_key(
-                                        &tandc.message,
-                                        &address,
-                                        &payment_skey,
-                                    )?;
-
-                                    match client.register(&address, &signature, &pubkey_hex).await {
-                                        Ok(RegistrationResult::Registered(_)) => {
-                                            println!("   ✅ Registered successfully");
-                                            current_address_index = address_counter;
-                                            address_counter += 1;
-                                            registered = true;
-                                        }
-                                        Ok(RegistrationResult::AlreadyRegistered { message }) => {
-                                            println!(
-                                                "   ℹ️  Address already registered: {}",
-                                                message
-                                            );
-                                            current_address_index = address_counter;
-                                            address_counter += 1;
-                                            registered = true;
-                                        }
-                                        Err(e) => {
-                                            let err_msg = e.to_string();
-                                            if err_msg.contains("Too Many Requests")
-                                                || err_msg.contains("429")
-                                            {
-                                                let wait_time = std::cmp::min(10 * attempt, 60); // Cap at 60 seconds
-                                                println!("   ⏳ Rate limited, waiting {} seconds... (attempt {})", wait_time, attempt);
-                                                tokio::time::sleep(
-                                                    tokio::time::Duration::from_secs(wait_time),
-                                                )
-                                                .await;
-                                            } else if err_msg.contains("timeout")
-                                                || err_msg.contains("timed out")
-                                            {
-                                                let wait_time = std::cmp::min(5 * attempt, 30);
-                                                println!("   ⏳ Network timeout during registration, retrying in {} seconds... (attempt {})", wait_time, attempt);
-                                                tokio::time::sleep(
-                                                    tokio::time::Duration::from_secs(wait_time),
-                                                )
-                                                .await;
-                                                if attempt >= 10 {
-                                                    println!("   ⚠️  Failed to register after {} attempts, skipping for now", attempt);
-                                                    continue 'mining_loop;
-                                                }
-                                            } else {
-                                                println!("   ⚠️  Registration error: {}, retrying in 10 seconds...", e);
-                                                tokio::time::sleep(
-                                                    tokio::time::Duration::from_secs(10),
-                                                )
-                                                .await;
-                                                if attempt >= 10 {
-                                                    println!("   ⚠️  Failed to register after {} attempts, skipping for now", attempt);
-                                                    continue 'mining_loop;
-                                                }
-                                            }
-                                        }
+                                match create_and_register_address(
+                                    &cardano_cli,
+                                    output_dir.as_path(),
+                                    shared_stake_vkey.as_path(),
+                                    network.as_str(),
+                                    &client,
+                                    &mut wallet,
+                                    wallet_json.as_path(),
+                                    &mut address_counter,
+                                )
+                                .await
+                                {
+                                    Ok((new_index, _new_address)) => {
+                                        current_address_index = new_index;
+                                    }
+                                    Err(e) => {
+                                        println!(
+                                            "   ⚠️  Failed to create/register new address: {:#}",
+                                            e
+                                        );
+                                        continue 'mining_loop;
                                     }
                                 }
                             } else {
@@ -1518,6 +1385,44 @@ async fn main() -> Result<()> {
                                     }
                                 }
                             }
+                            miner::MiningResult::ExceededExpectedHashes {
+                                total_hashes,
+                                threshold,
+                            } => {
+                                println!(
+                                    "\n⚠️  Attempted {} hashes without success (threshold {}). Rotating to a fresh address...",
+                                    total_hashes, threshold
+                                );
+
+                                match create_and_register_address(
+                                    &cardano_cli,
+                                    output_dir.as_path(),
+                                    shared_stake_vkey.as_path(),
+                                    network.as_str(),
+                                    &client,
+                                    &mut wallet,
+                                    wallet_json.as_path(),
+                                    &mut address_counter,
+                                )
+                                .await
+                                {
+                                    Ok((new_index, new_address)) => {
+                                        current_address_index = new_index;
+                                        println!(
+                                            "   🔄 Retrying with new address {} (index {})",
+                                            new_address, current_address_index
+                                        );
+                                    }
+                                    Err(e) => {
+                                        println!(
+                                            "   ⚠️  Unable to rotate address after exceeding work threshold: {:#}",
+                                            e
+                                        );
+                                    }
+                                }
+
+                                continue 'mining_loop;
+                            }
                             miner::MiningResult::Timeout => {
                                 println!("\n⏰ Mining timeout reached");
                                 break 'mining_loop;
@@ -1551,6 +1456,200 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn create_and_register_address(
+    cardano_cli: &str,
+    output_dir: &std::path::Path,
+    shared_stake_vkey: &std::path::Path,
+    network: &str,
+    client: &api::ScavengerClient,
+    wallet: &mut WalletConfig,
+    wallet_json: &std::path::Path,
+    address_counter: &mut usize,
+) -> Result<(usize, String)> {
+    let name = format!("addr-{}", *address_counter);
+    println!("\n📝 Creating address: {}", name);
+
+    let payment_vkey = output_dir.join(format!("{}.vkey", name));
+    let payment_skey = output_dir.join(format!("{}.skey", name));
+    let payment_addr = output_dir.join(format!("{}.addr", name));
+
+    let keygen_output = Command::new(cardano_cli)
+        .args(&[
+            "address",
+            "key-gen",
+            "--verification-key-file",
+            payment_vkey.to_str().context("Invalid payment vkey path")?,
+            "--signing-key-file",
+            payment_skey.to_str().context("Invalid payment skey path")?,
+        ])
+        .output()
+        .context("Failed to execute cardano-cli for payment key generation")?;
+
+    if !keygen_output.status.success() {
+        anyhow::bail!(
+            "cardano-cli key-gen failed: {}",
+            String::from_utf8_lossy(&keygen_output.stderr)
+        );
+    }
+
+    let mut build_args = vec![
+        "address",
+        "build",
+        "--payment-verification-key-file",
+        payment_vkey
+            .to_str()
+            .context("Invalid payment verification key path")?,
+        "--stake-verification-key-file",
+        shared_stake_vkey
+            .to_str()
+            .context("Invalid stake verification key path")?,
+    ];
+
+    if network == "mainnet" {
+        build_args.push("--mainnet");
+    } else {
+        build_args.push("--testnet-magic");
+        build_args.push("1");
+    }
+
+    let build_output = Command::new(cardano_cli)
+        .args(&build_args)
+        .output()
+        .context("Failed to execute cardano-cli for address build")?;
+
+    if !build_output.status.success() {
+        anyhow::bail!(
+            "cardano-cli address build failed: {}",
+            String::from_utf8_lossy(&build_output.stderr)
+        );
+    }
+
+    let address = String::from_utf8(build_output.stdout)?.trim().to_string();
+    fs::write(&payment_addr, &address).with_context(|| {
+        format!(
+            "Failed to write address file {}",
+            payment_addr.display()
+        )
+    })?;
+
+    let vkey_content = fs::read_to_string(&payment_vkey).with_context(|| {
+        format!(
+            "Failed to read payment verification key at {}",
+            payment_vkey.display()
+        )
+    })?;
+    let vkey_json: serde_json::Value = serde_json::from_str(&vkey_content)
+        .context("Failed to parse payment verification key JSON")?;
+    let pubkey_hex = vkey_json["cborHex"]
+        .as_str()
+        .context("Failed to extract public key from verification key")?
+        .trim_start_matches("5820")
+        .to_string();
+
+    wallet.addresses.push(wallet::AddressEntry {
+        address: address.clone(),
+        verification_key: pubkey_hex.clone(),
+    });
+    wallet
+        .to_file(wallet_json)
+        .with_context(|| format!("Failed to persist wallet file {}", wallet_json.display()))?;
+
+    println!("   ✅ Created: {}", address);
+    println!("🔐 Registering address...");
+
+    let mut attempt = 0;
+
+    loop {
+        attempt += 1;
+
+        let tandc = loop {
+            match client.get_terms_and_conditions(None).await {
+                Ok(tc) => break tc,
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    if err_msg.contains("timeout") || err_msg.contains("timed out") {
+                        let wait_time = std::cmp::min(5 * attempt, 30);
+                        println!(
+                            "   ⏳ Network timeout fetching T&C, retrying in {} seconds... (attempt {})",
+                            wait_time, attempt
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_secs(wait_time)).await;
+                        if attempt >= 10 {
+                            anyhow::bail!(
+                                "Failed to fetch Terms & Conditions after {} attempts",
+                                attempt
+                            );
+                        }
+                    } else {
+                        println!(
+                            "   ⚠️  T&C fetch error: {}, retrying...",
+                            e
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    }
+                }
+            }
+        };
+
+        let signature = wallet::sign_message_with_key(&tandc.message, &address, &payment_skey)?;
+
+        match client.register(&address, &signature, &pubkey_hex).await {
+            Ok(RegistrationResult::Registered(_)) => {
+                println!("   ✅ Registered successfully");
+                break;
+            }
+            Ok(RegistrationResult::AlreadyRegistered { message }) => {
+                println!("   ℹ️  Address already registered: {}", message);
+                break;
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                if err_msg.contains("Too Many Requests") || err_msg.contains("429") {
+                    let wait_time = std::cmp::min(10 * attempt, 60);
+                    println!(
+                        "   ⏳ Rate limited, waiting {} seconds... (attempt {})",
+                        wait_time, attempt
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(wait_time)).await;
+                } else if err_msg.contains("timeout") || err_msg.contains("timed out") {
+                    let wait_time = std::cmp::min(5 * attempt, 30);
+                    println!(
+                        "   ⏳ Network timeout during registration, retrying in {} seconds... (attempt {})",
+                        wait_time, attempt
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(wait_time)).await;
+                    if attempt >= 10 {
+                        anyhow::bail!(
+                            "Failed to register address {} after {} attempts",
+                            address,
+                            attempt
+                        );
+                    }
+                } else {
+                    println!(
+                        "   ⚠️  Registration error: {}, retrying in 10 seconds...",
+                        e
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                    if attempt >= 10 {
+                        anyhow::bail!(
+                            "Failed to register address {} after {} attempts",
+                            address,
+                            attempt
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    let new_index = wallet.addresses.len() - 1;
+    *address_counter = wallet.addresses.len();
+    println!("   📬 New address index: {}", new_index);
+
+    Ok((new_index, address))
 }
 
 fn init_logging(log_level: &str) -> Result<()> {

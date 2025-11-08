@@ -26,6 +26,14 @@ pub enum MiningResult {
     Stopped,
     /// Timeout reached before finding a solution
     Timeout,
+    /// Hash attempts exceeded the adaptive threshold without a solution
+    ExceededExpectedHashes { total_hashes: u64, threshold: u64 },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum WorkerSignal {
+    Solution(u64),
+    ThresholdReached(u64),
 }
 
 /// Mining engine that searches for valid nonces
@@ -33,6 +41,7 @@ pub struct MiningEngine {
     rom: Arc<Rom>,
     num_threads: usize,
     progress_bar: Option<ProgressBar>,
+    threshold_multiplier: u64,
 }
 
 impl MiningEngine {
@@ -52,7 +61,13 @@ impl MiningEngine {
             )),
             num_threads,
             progress_bar: None,
+            threshold_multiplier: 4,
         }
+    }
+
+    pub fn with_threshold_multiplier(mut self, multiplier: u64) -> Self {
+        self.threshold_multiplier = multiplier.max(1);
+        self
     }
 
     /// Initialize the ROM with the challenge's no_pre_mine value
@@ -112,13 +127,23 @@ impl MiningEngine {
         );
 
         let difficulty_mask = parse_difficulty(&challenge.difficulty)?;
-    let difficulty_target = u32::from_be_bytes(difficulty_mask);
-    // Each zero bit in the mask halves the success probability for a random hash.
+        let difficulty_target = u32::from_be_bytes(difficulty_mask);
+        // Each zero bit in the mask halves the success probability for a random hash.
         let constrained_bits = difficulty_target.count_zeros();
         let expected_hashes = 1u128 << constrained_bits;
+        let multiplier = self.threshold_multiplier.max(1) as u128;
+        let threshold_hashes_u128 = expected_hashes.saturating_mul(multiplier);
+        let threshold_hashes = threshold_hashes_u128
+            .min(u128::from(u64::MAX))
+            .max(1) as u64;
         info!(
             "Difficulty requires {} constrained bits; expect ~{} hashes (2^{}) to solve",
             constrained_bits, expected_hashes, constrained_bits
+        );
+        info!(
+            "Will rotate address if {} hashes are attempted without success (~{}x expectation)",
+            threshold_hashes,
+            self.threshold_multiplier.max(1)
         );
         let start_time = Instant::now();
 
@@ -142,6 +167,8 @@ impl MiningEngine {
             let challenge = challenge.clone();
             let address = address.to_string();
 
+            let threshold_hashes = threshold_hashes;
+
             handles.push(thread::spawn(move || {
                 mine_worker(
                     thread_id,
@@ -152,6 +179,7 @@ impl MiningEngine {
                     found,
                     solution_nonce,
                     hash_count,
+                    threshold_hashes,
                     tx,
                 );
             }));
@@ -225,7 +253,13 @@ impl MiningEngine {
         // Wait for result or timeout
         let result = if let Some(timeout_duration) = timeout {
             match rx.recv_timeout(timeout_duration) {
-                Ok(nonce) => MiningResult::Solution(nonce),
+                Ok(WorkerSignal::Solution(nonce)) => MiningResult::Solution(nonce),
+                Ok(WorkerSignal::ThresholdReached(total_hashes)) => {
+                    MiningResult::ExceededExpectedHashes {
+                        total_hashes,
+                        threshold: threshold_hashes,
+                    }
+                }
                 Err(_) => {
                     found.store(true, Ordering::Relaxed);
                     MiningResult::Timeout
@@ -233,7 +267,13 @@ impl MiningEngine {
             }
         } else {
             match rx.recv() {
-                Ok(nonce) => MiningResult::Solution(nonce),
+                Ok(WorkerSignal::Solution(nonce)) => MiningResult::Solution(nonce),
+                Ok(WorkerSignal::ThresholdReached(total_hashes)) => {
+                    MiningResult::ExceededExpectedHashes {
+                        total_hashes,
+                        threshold: threshold_hashes,
+                    }
+                }
                 Err(_) => MiningResult::Stopped,
             }
         };
@@ -272,6 +312,15 @@ impl MiningEngine {
             MiningResult::Stopped => {
                 warn!("Mining stopped");
             }
+            MiningResult::ExceededExpectedHashes {
+                total_hashes,
+                threshold,
+            } => {
+                warn!(
+                    "Exceeded expected work threshold without solution | Total hashes: {} | Threshold: {} | Rate: {:.2} H/s",
+                    total_hashes, threshold, hash_rate
+                );
+            }
         }
 
         Ok(result)
@@ -288,7 +337,8 @@ fn mine_worker(
     found: Arc<AtomicBool>,
     solution_nonce: Arc<AtomicU64>,
     hash_count: Arc<AtomicU64>,
-    tx: Sender<u64>,
+    threshold_hashes: u64,
+    tx: Sender<WorkerSignal>,
 ) {
     debug!("Worker thread {} started", thread_id);
 
@@ -302,6 +352,7 @@ fn mine_worker(
 
     let mut nonce = nonce_start;
     let mut local_hash_count = 0u64;
+    let threshold_enabled = threshold_hashes > 0;
 
     while !found.load(Ordering::Relaxed) {
         // Construct preimage
@@ -318,14 +369,33 @@ fn mine_worker(
 
             found.store(true, Ordering::Relaxed);
             solution_nonce.store(nonce, Ordering::Relaxed);
-            let _ = tx.send(nonce);
+            let _ = tx.send(WorkerSignal::Solution(nonce));
             break;
+        }
+
+        if threshold_enabled {
+            let estimated_total = hash_count.load(Ordering::Relaxed).saturating_add(local_hash_count);
+            if estimated_total >= threshold_hashes {
+                let prev = hash_count.fetch_add(local_hash_count, Ordering::Relaxed);
+                let total = prev + local_hash_count;
+                local_hash_count = 0;
+                if total >= threshold_hashes && !found.swap(true, Ordering::Relaxed) {
+                    let _ = tx.send(WorkerSignal::ThresholdReached(total));
+                }
+                break;
+            }
         }
 
         // Update global hash count periodically
         if local_hash_count % 1000 == 0 {
-            hash_count.fetch_add(1000, Ordering::Relaxed);
+            let prev = hash_count.fetch_add(1000, Ordering::Relaxed);
+            let total = prev + 1000;
             local_hash_count = 0;
+
+            if threshold_enabled && total >= threshold_hashes && !found.swap(true, Ordering::Relaxed) {
+                let _ = tx.send(WorkerSignal::ThresholdReached(total));
+                break;
+            }
         }
 
         nonce = nonce.wrapping_add(1);
@@ -333,7 +403,11 @@ fn mine_worker(
 
     // Update final hash count
     if local_hash_count > 0 {
-        hash_count.fetch_add(local_hash_count, Ordering::Relaxed);
+        let prev = hash_count.fetch_add(local_hash_count, Ordering::Relaxed);
+        let total = prev + local_hash_count;
+        if threshold_enabled && total >= threshold_hashes && !found.swap(true, Ordering::Relaxed) {
+            let _ = tx.send(WorkerSignal::ThresholdReached(total));
+        }
     }
 
     debug!("Worker thread {} stopped", thread_id);
